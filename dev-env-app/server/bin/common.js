@@ -1,7 +1,7 @@
 const parseArgv = require('minimist');
 
 const parsedArgv = parseArgv(process.argv)
-const serverPort = parsedArgv.p || parsedArgv.port || 6667
+const serverPort = parsedArgv.p || parsedArgv.port || 6669
 
 const getRequestOptions = ({ path, method = 'GET' }) => ({
   hostname: 'localhost',
