@@ -31,7 +31,7 @@ When using the app as a dev environment for the Behodler front-end apps, run
 yarn start
 ```
 
-Both `yarn dev` and `yarn start` commands start the app using the default 6667 port for the HTTP server. To use a different port, use the `--port` or `-p` argument, e.g.
+Both `yarn dev` and `yarn start` commands start the app using the default 6669 port for the HTTP server. To use a different port, use the `--port` or `-p` argument, e.g.
 ```
 yarn dev --port 1234
 yarn dev -p 1234
