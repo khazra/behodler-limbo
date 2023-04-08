@@ -61,53 +61,62 @@ async function listTokenForStakingInLimbo() {
 
     // Initialize Ethereum provider, wallet and contracts
     const morgothTokenApprover = new ethers.Contract(addresses.MorgothTokenApprover, MORGOTH_TOKEN_APPROVER_ABI, wallet);
-    morgothTokenApprover.name = 'MorgothTokenApprover';
+    morgothTokenApprover.displayName = 'MorgothTokenApprover';
     const limboDAO = new ethers.Contract(addresses.LimboDAO, LIMBO_DAO_ABI, wallet);
-    limboDAO.name = 'LimboDAO';
+    limboDAO.displayName = 'LimboDAO';
     const proposalFactory = new ethers.Contract(addresses.ProposalFactory, PROPOSAL_FACTORY_ABI, wallet);
-    proposalFactory.name = 'ProposalFactory';
+    proposalFactory.displayName = 'ProposalFactory';
     const updateMultipleSoulConfigProposal = new ethers.Contract(addresses.UpdateMultipleSoulConfigProposal, UPDATE_MULTIPLE_SOUL_CONFIG_PROPOSAL_ABI, wallet);
-    updateMultipleSoulConfigProposal.name = 'UpdateMultipleSoulConfigProposal';
+    updateMultipleSoulConfigProposal.displayName = 'UpdateMultipleSoulConfigProposal';
     const aaveContract = new ethers.Contract(addresses.Aave, ERC20_ABI, wallet);
-    aaveContract.name = 'Aave';
-    const eyeTokenContract = new ethers.Contract(addresses.EYE, ERC20_ABI, wallet);
-    eyeTokenContract.name = 'Eye';
+    aaveContract.displayName = 'Aave';
+    const eyeContract = new ethers.Contract(addresses.EYE, ERC20_ABI, wallet);
+    eyeContract.displayName = 'EYE';
 
     async function call(contract, methodName, ...args) {
       try {
-        console.info(`Calling ${methodName} on ${contract.name} with the following arguments`, args);
+        console.info(`Calling ${methodName} on ${contract.displayName} with the following arguments`, args);
         return contract[methodName](...args);
       } catch (error) {
-        console.error(`Failed to call ${methodName} on ${contract.name}`);
+        console.error(`Failed to call ${methodName} on ${contract.displayName}`);
         throw error;
       }
     }
 
-    const baseTokenConfig = await call(morgothTokenApprover, 'baseTokenMapping', addresses.Aave);
+    const isAaveApprovedInMorgoth = await call(
+      morgothTokenApprover,
+      'approved',
+      addresses.Aave,
+    );
 
-    let aaveCliffFaceProxyAddress;
-
-    if (baseTokenConfig[0] !== ethers.constants.AddressZero) {
-      console.log('aaveCliffFaceProxyAddress already exists', aaveCliffFaceProxyAddress)
-      aaveCliffFaceProxyAddress = baseTokenConfig[0];
-    } else {
+    if (!isAaveApprovedInMorgoth) {
       const cliffFaceProxyTx = await call(
         morgothTokenApprover,
         'generateCliffFaceProxy',
         addresses.Aave,
-        ethers.constants.WeiPerEther,
+        '1000',
         1,
       );
-      const cliffFaceProxyReceipt = await cliffFaceProxyTx.wait();
-      aaveCliffFaceProxyAddress = cliffFaceProxyReceipt.events[0].args.proxy;
+      await cliffFaceProxyTx.wait();
+    } else {
+      console.log('Aave is already approved in Morgoth');
     }
+
+    const morgothTokenApproverBaseTokenMapping = await call(
+      morgothTokenApprover,
+      'baseTokenMapping',
+      addresses.Aave,
+    );
+
+    const cliffFacedAaveAddress = morgothTokenApproverBaseTokenMapping.cliffFace;
+    console.log('cliffFaceProxy for Aave', cliffFacedAaveAddress);
 
     console.log("Parameterizing the UpdateMultipleSoulConfigProposal with token details");
     const parameterizeTx = await call(
       updateMultipleSoulConfigProposal,
       'parameterize',
       addresses.Aave,
-      '10000000',
+      '1000',
       1, // threshold
       1, // staking
       0,
@@ -118,45 +127,39 @@ async function listTokenForStakingInLimbo() {
       false,
     );
     await parameterizeTx.wait();
-    console.log("Parameterization complete.");
 
     // 3. Generate Fate by burning EYE tokens
-    const limboDAOProposalConfig = await limboDAO.proposalConfig()
-    console.log('limboDAOProposalConfig', limboDAOProposalConfig);
+    const limboDAOProposalConfig = await call(limboDAO, 'proposalConfig')
     const requiredFate = limboDAOProposalConfig.requiredFateStake;
-    const burnAmount = requiredFate.div(10); // Assuming 10x Fate generation by burning EYE
-    const approveEYETx = await eyeTokenContract.approve(addresses.LimboDAO, burnAmount);
-    console.log("Approving LimboDAO to spend EYE tokens...");
+    // const burnAmount = requiredFate.div(10).add(1000); // Assuming 10x Fate generation by burning EYE
+    const approveEYETx = await call(
+      eyeContract,
+      'approve',
+      addresses.LimboDAO,
+      ethers.constants.MaxUint256,
+    );
     await approveEYETx.wait();
-    console.log("Approval complete.");
 
-    const burnTx = await limboDAO.burnAsset(addresses.EYE, burnAmount, false);
-    console.log("Burning EYE tokens to generate Fate...");
+    const burnTx = await call(limboDAO, 'burnAsset', addresses.EYE, requiredFate, false);
     await burnTx.wait();
-    console.log("EYE tokens burned and Fate generated.");
 
     // 4. Lodge the proposal using ProposalFactory
-    const proposals = await updateMultipleSoulConfigProposal.params()
-    console.log('proposals', proposals);
-    const lodgeTx = await proposalFactory.lodgeProposal(proposals[0]);
-    console.log("Lodging the proposal...");
-    const lodgeReceipt = await lodgeTx.wait();
+    const isAaveProposalWhitelisted = await call(proposalFactory, 'whitelistedProposalContracts', addresses.Aave);
+    console.info('isAaveProposalWhitelisted', isAaveProposalWhitelisted);
+    const lodgeTx = await call(proposalFactory, 'lodgeProposal', addresses.Aave);
+    await lodgeTx.wait();
 
     // 5. Vote "Yes" on the proposal through LimboDAO
-    const voteTx = await limboDAO.vote(proposals[0], '10000000');
-    console.log("Voting 'Yes' on the proposal...");
+    const voteTx = await call(limboDAO, 'vote', addresses.Aave, 1000);
     await voteTx.wait();
-    console.log("Vote complete.");
 
     console.log("Waiting for the voting period to pass...");
     await provider.send("evm_increaseTime", [21660]); // 6 hours and a minute
-    await provider.send("evm_mine");
+    await provider.send("evm_mine", []);
 
     // 6. Execute the proposal after the voting period has passed
-    const executeTx = await limboDAO.executeCurrentProposal();
-    console.log("Executing the proposal...");
+    const executeTx = await call(limboDAO, 'executeCurrentProposal');
     await executeTx.wait();
-    console.log("Proposal executed, token listed for staking in Limbo.");
   } catch (error) {
     console.error("Error listing token for staking in Limbo:", error);
   }
