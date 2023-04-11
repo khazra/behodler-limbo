@@ -8,6 +8,8 @@ const LIMBO_DAO_ABI = require('../ABIs/LimboDAO.json');
 const PROPOSAL_FACTORY_ABI = require('../ABIs/ProposalFactory.json');
 const UPDATE_MULTIPLE_SOUL_CONFIG_PROPOSAL_ABI = require('../ABIs/UpdateMultipleSoulConfigProposal.json');
 const ERC20_ABI = require('../ABIs/ERC20.json');
+const LIMBO_ABI = require('../ABIs/Limbo.json');
+const TOKEN_PROXY_REGISTRY_ABI = require('../ABIs/TokenProxyRegistry.json');
 
 const WALLET_PRIVATE_KEY = 'cf4a9e84114acde4e307c37c27f91ea161516b83e70a8fe2096a97100beaedd9';
 
@@ -72,13 +74,17 @@ async function listTokenForStakingInLimbo() {
     aaveContract.displayName = 'Aave';
     const eyeContract = new ethers.Contract(addresses.EYE, ERC20_ABI, wallet);
     eyeContract.displayName = 'EYE';
+    const limbo = new ethers.Contract(addresses.Limbo, LIMBO_ABI, wallet);
+    limbo.displayName = 'Limbo';
+    const tokenProxyRegistry = new ethers.Contract(addresses.TokenProxyRegistry, TOKEN_PROXY_REGISTRY_ABI, wallet);
+    tokenProxyRegistry.displayName = 'TokenProxyRegistry';
 
     async function call(contract, methodName, ...args) {
       try {
-        console.info(`Calling ${methodName} on ${contract.displayName} with the following arguments`, args);
+        console.info(`Calling '${methodName}' method on '${contract.displayName}' contract with the following arguments`, args);
         return contract[methodName](...args);
       } catch (error) {
-        console.error(`Failed to call ${methodName} on ${contract.displayName}`);
+        console.error(`Failed to call ${contract.displayName}.${methodName}`);
         throw error;
       }
     }
@@ -112,7 +118,7 @@ async function listTokenForStakingInLimbo() {
     console.log('cliffFaceProxy for Aave', cliffFacedAaveAddress);
 
     console.log("Parameterizing the UpdateMultipleSoulConfigProposal with token details");
-    const parameterizeTx = await call(
+    const parameterizeUpdateMultipleSoulConfigProposalTx = await call(
       updateMultipleSoulConfigProposal,
       'parameterize',
       addresses.Aave,
@@ -126,12 +132,26 @@ async function listTokenForStakingInLimbo() {
       10,
       false,
     );
-    await parameterizeTx.wait();
+    await parameterizeUpdateMultipleSoulConfigProposalTx.wait();
+
+    const setUpdateMultipleSoulConfigProposalProxyTx = await call(
+      updateMultipleSoulConfigProposal,
+      'setProxy',
+      ethers.constants.AddressZero,
+      cliffFacedAaveAddress,
+      0,
+    );
+    await setUpdateMultipleSoulConfigProposalProxyTx.wait();
+
+    const lockUpdateMultipleSoulConfigProposalTx = await call(
+      updateMultipleSoulConfigProposal,
+      'lockDown',
+    );
+    await lockUpdateMultipleSoulConfigProposalTx.wait();
 
     // 3. Generate Fate by burning EYE tokens
     const limboDAOProposalConfig = await call(limboDAO, 'proposalConfig')
-    const requiredFate = limboDAOProposalConfig.requiredFateStake;
-    // const burnAmount = requiredFate.div(10).add(1000); // Assuming 10x Fate generation by burning EYE
+    // const burnAmount = limboDAOProposalConfig.requiredFateStake.div(10).add(1000); // Assuming 10x Fate generation by burning EYE
     const approveEYETx = await call(
       eyeContract,
       'approve',
@@ -140,26 +160,30 @@ async function listTokenForStakingInLimbo() {
     );
     await approveEYETx.wait();
 
-    const burnTx = await call(limboDAO, 'burnAsset', addresses.EYE, requiredFate, false);
+    const burnTx = await call(limboDAO, 'burnAsset', addresses.EYE, limboDAOProposalConfig.requiredFateStake, false);
     await burnTx.wait();
 
     // 4. Lodge the proposal using ProposalFactory
-    const isAaveProposalWhitelisted = await call(proposalFactory, 'whitelistedProposalContracts', addresses.Aave);
-    console.info('isAaveProposalWhitelisted', isAaveProposalWhitelisted);
-    const lodgeTx = await call(proposalFactory, 'lodgeProposal', addresses.Aave);
+    const lodgeTx = await call(proposalFactory, 'lodgeProposal', addresses.UpdateMultipleSoulConfigProposal);
     await lodgeTx.wait();
 
     // 5. Vote "Yes" on the proposal through LimboDAO
-    const voteTx = await call(limboDAO, 'vote', addresses.Aave, 1000);
+    const voteTx = await call(limboDAO, 'vote', addresses.UpdateMultipleSoulConfigProposal, 1000);
     await voteTx.wait();
 
     console.log("Waiting for the voting period to pass...");
-    await provider.send("evm_increaseTime", [21660]); // 6 hours and a minute
+    await provider.send("evm_increaseTime", [limboDAOProposalConfig.votingDuration.toNumber()]);
     await provider.send("evm_mine", []);
 
     // 6. Execute the proposal after the voting period has passed
     const executeTx = await call(limboDAO, 'executeCurrentProposal');
     await executeTx.wait();
+
+    const proxyPair = await call(tokenProxyRegistry, 'tokenProxy', addresses.Aave);
+    console.info('proxyPair', proxyPair);
+
+    const soul = await call(limbo, 'souls', addresses.Aave, 0);
+    console.info('soul', soul);
   } catch (error) {
     console.error("Error listing token for staking in Limbo:", error);
   }
